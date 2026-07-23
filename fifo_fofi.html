@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Async FIFO — First Principles to Full Design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0d12;
+    --panel:#10141c;
+    --panel2:#151b26;
+    --panel3:#1a2130;
+    --grid:#1e2531;
+    --line:#252d3d;
+    --text:#e7eaee;
+    --muted:#8b95a5;
+    --muted2:#5c6576;
+    --w:#4fd8c9;       /* write domain */
+    --w-dim:#2a5a54;
+    --r:#f2a65a;       /* read domain */
+    --r-dim:#5a4527;
+    --data:#b49ce8;
+    --flag:#f2617a;
+    --flag-dim:#4a2530;
+    --good:#6fcf97;
+    --accent:#5b8cff;
+    --mono:'JetBrains Mono', ui-monospace, monospace;
+    --sans:'Inter', system-ui, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);}
+  body{
+    background-image:
+      radial-gradient(circle at 15% 0%, #101826 0%, transparent 45%),
+      radial-gradient(circle at 85% 100%, #1a1420 0%, transparent 45%);
+  }
+  #app{max-width:1180px;margin:0 auto;padding:18px 18px 60px;}
+
+  /* ---------- topbar ---------- */
+  .topbar{
+    display:flex;flex-direction:column;gap:14px;
+    padding-bottom:16px;margin-bottom:6px;
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+  .brand .chip{
+    font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--w);
+    border:1px solid var(--w-dim);background:#0d1a18;padding:3px 8px;border-radius:3px;
+  }
+  .brand h1{
+    font-family:var(--mono);font-weight:700;font-size:20px;letter-spacing:-0.01em;margin:0;
+  }
+  .brand p{margin:0;color:var(--muted);font-size:13px;font-family:var(--sans);}
+
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;}
+  .tab{
+    font-family:var(--mono);font-size:12px;color:var(--muted);
+    background:var(--panel);border:1px solid var(--line);border-radius:4px;
+    padding:8px 12px;cursor:pointer;user-select:none;
+    display:flex;align-items:center;gap:8px;transition:border-color .15s, color .15s, background .15s;
+  }
+  .tab .num{color:var(--muted2);}
+  .tab:hover{border-color:#39445a;color:var(--text);}
+  .tab.active{
+    color:var(--bg);background:var(--w);border-color:var(--w);font-weight:600;
+  }
+  .tab.active .num{color:#06302b;}
+
+  /* ---------- stage layout ---------- */
+  .stage{padding-top:20px;display:flex;flex-direction:column;gap:16px;}
+  .stage-head{display:flex;flex-direction:column;gap:4px;margin-bottom:2px;}
+  .stage-head .eyebrow{font-family:var(--mono);font-size:11px;color:var(--w);letter-spacing:.12em;}
+  .stage-head h2{margin:0;font-size:22px;font-family:var(--mono);font-weight:700;}
+  .stage-head p.sub{margin:2px 0 0;color:var(--muted);font-size:14.5px;max-width:760px;line-height:1.5;}
+
+  .panel{
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;
+  }
+  .panel h3{
+    margin:0 0 10px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--muted);
+    text-transform:uppercase;font-weight:600;
+  }
+  .row{display:flex;gap:14px;flex-wrap:wrap;}
+  .col{flex:1;min-width:260px;}
+  .prose{font-size:14.5px;line-height:1.65;color:#c7cdd8;}
+  .prose b{color:var(--text);}
+  .prose .w{color:var(--w);font-weight:600;}
+  .prose .r{color:var(--r);font-weight:600;}
+  .prose code{font-family:var(--mono);background:#0d1119;border:1px solid var(--line);padding:1px 5px;border-radius:3px;font-size:13px;color:var(--text);}
+
+  svg text{font-family:var(--mono);}
+  .lbl{fill:var(--muted);font-size:11px;}
+  .lbl-w{fill:var(--w);font-size:11px;font-weight:600;}
+  .lbl-r{fill:var(--r);font-size:11px;font-weight:600;}
+
+  button.btn{
+    font-family:var(--mono);font-size:12.5px;font-weight:600;letter-spacing:.02em;
+    background:var(--panel3);border:1px solid var(--line);color:var(--text);
+    padding:9px 14px;border-radius:5px;cursor:pointer;transition:all .12s;
+  }
+  button.btn:hover{border-color:#3d485f;background:#202a3c;}
+  button.btn:active{transform:translateY(1px);}
+  button.btn:disabled{opacity:.35;cursor:not-allowed;}
+  button.btn.w{border-color:var(--w-dim);color:var(--w);}
+  button.btn.w:hover{background:#10241f;}
+  button.btn.w.on{background:var(--w);color:#06251f;}
+  button.btn.r{border-color:var(--r-dim);color:var(--r);}
+  button.btn.r:hover{background:#241a0c;}
+  button.btn.r.on{background:var(--r);color:#2b1a04;}
+  button.btn.accent{border-color:#25407a;color:var(--accent);}
+  button.btn.accent:hover{background:#0f1a30;}
+
+  input[type=text], input[type=number]{
+    font-family:var(--mono);background:#0d1119;border:1px solid var(--line);color:var(--text);
+    padding:8px 10px;border-radius:5px;font-size:13px;width:90px;
+  }
+  input[type=range]{width:120px;accent-color:var(--w);}
+  .field{display:flex;flex-direction:column;gap:5px;}
+  .field label{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;}
+  .ctrl-group{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;}
+
+  .flag-light{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:13px;}
+  .dot{width:11px;height:11px;border-radius:50%;background:#2a3140;box-shadow:inset 0 0 0 1px #384158;flex:none;}
+  .dot.on-flag{background:var(--flag);box-shadow:0 0 10px 2px rgba(242,97,122,.55);}
+  .dot.on-good{background:var(--good);box-shadow:0 0 10px 2px rgba(111,207,151,.5);}
+
+  .pillbar{display:flex;gap:6px;flex-wrap:wrap;}
+  .pill{
+    font-family:var(--mono);font-size:11.5px;padding:6px 10px;border-radius:20px;
+    border:1px solid var(--line);background:var(--panel3);color:var(--muted);cursor:pointer;
+  }
+  .pill.active{border-color:var(--w);color:var(--w);background:#0f1e1b;}
+
+  table.glossary{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px;}
+  table.glossary td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;}
+  table.glossary tr:last-child td{border-bottom:none;}
+  table.glossary td.sig{color:var(--text);font-weight:600;white-space:nowrap;}
+  table.glossary td.desc{color:var(--muted);font-family:var(--sans);font-size:13px;line-height:1.5;}
+
+  .flow-note{font-family:var(--mono);font-size:11px;color:var(--muted2);text-align:center;margin-top:6px;}
+
+  /* memory ring numbers */
+  .memcell rect{fill:var(--panel3);stroke:var(--line);stroke-width:1;}
+  .memcell text{fill:var(--muted);font-size:10px;}
+  .memcell.written rect{fill:#1a2a3a;stroke:#2c4258;}
+  .memcell.written text.val{fill:var(--data);}
+  .memcell.headw rect{stroke:var(--w);stroke-width:2;}
+  .memcell.headr rect{stroke:var(--r);stroke-width:2;}
+
+  .badge{
+    font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--line);
+    color:var(--muted);display:inline-block;
+  }
+
+  footer.credit{margin-top:30px;text-align:center;color:var(--muted2);font-family:var(--mono);font-size:11px;}
+
+  @media (max-width:720px){
+    .brand h1{font-size:17px;}
+    .stage-head h2{font-size:19px;}
+    button.btn{padding:8px 10px;font-size:11.5px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="topbar">
+    <div class="brand">
+      <span class="chip">CLK_A → CLK_B</span>
+      <h1>Asynchronous FIFO, from first principles</h1>
+    </div>
+    <p style="font-family:var(--sans);color:var(--muted);font-size:13.5px;margin:0;">
+      A ground-up build of the parameterized async FIFO: where it sits in a chip, why it exists, and how every signal — <span style="color:var(--w)">wclk / wdata / wr_en / wfull</span> and <span style="color:var(--r)">rclk / rdata / rd_en / rempty</span> — earns its place.
+    </p>
+    <div class="tabs" id="tabs"></div>
+  </div>
+  <div id="stageRoot" class="stage"></div>
+  <footer class="credit">async fifo lab · gray-code pointers · dual-flop synchronizers · depth &amp; width parameterized</footer>
+</div>
+
+<script>
+/* =========================================================================
+   ENGINE
+   ========================================================================= */
+const Engine = (function(){
+  let S = {};
+
+  function bin2gray(b){ return b ^ (b >> 1); }
+
+  function fullCheck(wgNext, rq2, addrBits){
+    const n = addrBits + 1;
+    const msb  = 1 << (n-1);
+    const msb2 = 1 << (n-2);
+    const inverted = rq2 ^ msb ^ msb2;
+    return wgNext === inverted;
+  }
+
+  function reset(depth, widthBits){
+    depth = depth || (S.depth || 8);
+    widthBits = widthBits || (S.widthBits || 8);
+    const addrBits = Math.log2(depth);
+    S = {
+      depth, widthBits, addrBits,
+      mask: depth - 1,
+      ptrMask: (1 << (addrBits+1)) - 1,
+      wptr: 0, rptr: 0,
+      rq_ff1: 0, rq_ff2: 0,
+      wq_ff1: 0, wq_ff2: 0,
+      mem: new Array(depth).fill(null),
+      wfull: false, rempty: true,
+      wclk: 0, rclk: 0,
+      autoW: false, autoR: false,
+      wTimer: null, rTimer: null,
+      wPeriod: 900, rPeriod: 1300,
+      wrEn: true, rdEn: true,
+      dataIn: 1,
+      lastWritten: null, lastRead: null,
+      writes: 0, reads: 0,
+      events: [], samples: [], startT: performance.now()
+    };
+    return S;
+  }
+
+  function sample(){
+    S.samples.push({
+      t: performance.now(),
+      wclk: S.wclk, rclk: S.rclk,
+      wfull: S.wfull?1:0, rempty: S.rempty?1:0,
+      wren: (S.wrEn && !S.wfull)?1:0, rden:(S.rdEn && !S.rempty)?1:0
+    });
+    const cutoff = performance.now() - 11000;
+    while(S.samples.length && S.samples[0].t < cutoff) S.samples.shift();
+  }
+
+  function writeEdge(){
+    if (S.wrEn && !S.wfull){
+      const addr = S.wptr & S.mask;
+      S.mem[addr] = S.dataIn;
+      S.lastWritten = {addr, val:S.dataIn, t:performance.now()};
+      S.events.push({t:performance.now(), type:'w', val:S.dataIn, addr});
+      S.wptr = (S.wptr + 1) & S.ptrMask;
+      S.writes++;
+      S.dataIn = ((S.dataIn * 43 + 17) % ((1<<S.widthBits)-1)) + 1;
+    } else {
+      S.lastWritten = null;
+    }
+    S.rq_ff2 = S.rq_ff1;
+    S.rq_ff1 = bin2gray(S.rptr);
+    const wgNext = bin2gray(S.wptr);
+    S.wfull = fullCheck(wgNext, S.rq_ff2, S.addrBits);
+  }
+
+  function readEdge(){
+    if (S.rdEn && !S.rempty){
+      const addr = S.rptr & S.mask;
+      const val = S.mem[addr];
+      S.lastRead = {addr, val, t:performance.now()};
+      S.events.push({t:performance.now(), type:'r', val, addr});
+      S.rptr = (S.rptr + 1) & S.ptrMask;
+      S.reads++;
+    } else {
+      S.lastRead = null;
+    }
+    S.wq_ff2 = S.wq_ff1;
+    S.wq_ff1 = bin2gray(S.wptr);
+    const rgNext = bin2gray(S.rptr);
+    S.rempty = (rgNext === S.wq_ff2);
+  }
+
+  function trimEvents(){
+    const cutoff = performance.now() - 11000;
+    while(S.events.length && S.events[0].t < cutoff) S.events.shift();
+  }
+
+  return {
+    state:()=>S, reset, writeEdge, readEdge, sample, trimEvents, bin2gray, fullCheck
+  };
+})();
+
+Engine.reset(8,8);
+
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
+function bits(v, n){ return v.toString(2).padStart(n,'0'); }
+function hex(v, digits){ return '0x'+v.toString(16).toUpperCase().padStart(digits,'0'); }
+const SVG_TAGS = new Set(['svg','rect','circle','line','path','text','g','polygon','tspan','defs','marker','linearGradient','stop']);
+function el(tag, attrs, ...kids){
+  const e = SVG_TAGS.has(tag)
+    ? document.createElementNS('http://www.w3.org/2000/svg', tag)
+    : document.createElement(tag);
+  for(const k in (attrs||{})){
+    if(k==='html'){ e.innerHTML = attrs[k]; }
+    else if(k.startsWith('on')){ e.addEventListener(k.slice(2), attrs[k]); }
+    else e.setAttribute(k, attrs[k]);
+  }
+  kids.flat().forEach(k=>{ if(k!=null) e.appendChild(typeof k==='string'?document.createTextNode(k):k); });
+  return e;
+}
+function svg(attrs, ...kids){ return el('svg', attrs, ...kids); }
+
+let STAGE = 1;
+const STAGES = [
+  {n:1, title:'System Placement', short:'Placement'},
+  {n:2, title:'Circular Buffer & Pointers', short:'Pointers'},
+  {n:3, title:'Crossing Clock Domains', short:'Metastability'},
+  {n:4, title:'Gray Code + Synchronizers', short:'Gray Code'},
+  {n:5, title:'Full / Empty Logic', short:'Flags'},
+  {n:6, title:'Full Parameterized FIFO', short:'Simulator'},
+];
+
+function buildTabs(){
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = '';
+  STAGES.forEach(s=>{
+    const t = el('div', {class:'tab'+(STAGE===s.n?' active':''), onclick:()=>{ STAGE=s.n; render(); }},
+      el('span',{class:'num'}, String(s.n).padStart(2,'0')), s.short);
+    tabs.appendChild(t);
+  });
+}
+
+function render(){
+  buildTabs();
+  const root = document.getElementById('stageRoot');
+  root.innerHTML = '';
+  stopAllTimers_ifLeavingSim();
+  const fns = {1:stage1,2:stage2,3:stage3,4:stage4,5:stage5,6:stage6};
+  fns[STAGE](root);
+}
+
+function stopAllTimers_ifLeavingSim(){
+  // keep sim running across views only while on stage 6; pause visuals otherwise
+  if (STAGE!==6){
+    cancelWaveLoop();
+  }
+}
+
+/* =========================================================================
+   STAGE 1 — SYSTEM PLACEMENT
+   ========================================================================= */
+function stage1(root){
+  root.appendChild(el('div',{class:'stage-head'},
+    el('div',{class:'eyebrow'},'01 · CONTEXT'),
+    el('h2',{}, 'Where does an async FIFO actually sit?'),
+    el('p',{class:'sub'}, 'Two pieces of logic run on two clocks that have no fixed phase relationship — a CPU core and a DDR controller, a sensor and a USB block, two chiplets. The FIFO is the only thing allowed to touch both clocks. Everything on its left only ever sees wclk. Everything on its right only ever sees rclk.')
+  ));
+
+  const panel = el('div',{class:'panel'});
+  const w=1080,h=300;
+  const s = svg({viewBox:`0 0 ${w} ${h}`, width:'100%', height:'auto', style:'max-width:100%;'});
+
+  s.appendChild(el('rect',{x:0,y:0,width:390,height:h,fill:'#0d1a18',opacity:.5}));
+  s.appendChild(el('rect',{x:w-390,y:0,width:390,height:h,fill:'#1e160a',opacity:.5}));
+  s.appendChild(el('rect',{x:390,y:0,width:w-780,height:h,fill:'#12101c',opacity:.4}));
+
+  s.appendChild(el('text',{x:20,y:26,class:'lbl-w'},'CLOCK DOMAIN A  ·  wclk'));
+  s.appendChild(el('text',{x:w-370,y:26,class:'lbl-r'},'CLOCK DOMAIN B  ·  rclk'));
+  s.appendChild(el('text',{x:w/2,y:26,class:'lbl','text-anchor':'middle'},'NO FIXED PHASE RELATIONSHIP'));
+
+  s.appendChild(el('rect',{x:40,y:90,width:220,height:110,rx:8,fill:'#101c1a',stroke:'#2a5a54'}));
+  s.appendChild(el('text',{x:150,y:135,'text-anchor':'middle',fill:'#e7eaee','font-size':13,'font-family':'var(--mono)'},'Producer logic'));
+  s.appendChild(el('text',{x:150,y:154,'text-anchor':'middle',class:'lbl'},'e.g. CPU core, sensor,'));
+  s.appendChild(el('text',{x:150,y:170,'text-anchor':'middle',class:'lbl'},'fast write engine'));
+
+  s.appendChild(el('rect',{x:w-260,y:90,width:220,height:110,rx:8,fill:'#1c1509',stroke:'#5a4527'}));
+  s.appendChild(el('text',{x:w-150,y:135,'text-anchor':'middle',fill:'#e7eaee','font-size':13,'font-family':'var(--mono)'},'Consumer logic'));
+  s.appendChild(el('text',{x:w-150,y:154,'text-anchor':'middle',class:'lbl'},'e.g. DDR ctrl, USB PHY,'));
+  s.appendChild(el('text',{x:w-150,y:170,'text-anchor':'middle',class:'lbl'},'slow read engine'));
+
+  s.appendChild(el('rect',{x:420,y:70,width:240,height:160,rx:10,fill:'#151125',stroke:'#4b3a80','stroke-width':1.4}));
+  s.appendChild(el('text',{x:540,y:100,'text-anchor':'middle',fill:'#c9b8ff','font-size':13,'font-family':'var(--mono)','font-weight':700},'ASYNC FIFO'));
+  for(let i=0;i<5;i++){
+    s.appendChild(el('rect',{x:450+i*38,y:120,width:30,height:70,rx:3,fill:'#1c1733',stroke:'#372a5c'}));
+  }
+  s.appendChild(el('text',{x:540,y:216,'text-anchor':'middle',class:'lbl'},'dual-port RAM + gray-code pointers'));
+
+  const defs = el('defs',{});
+  defs.appendChild(el('marker',{id:'arrow',markerWidth:8,markerHeight:8,refX:6,refY:3,orient:'auto'}, el('path',{d:'M0,0 L6,3 L0,6 Z',fill:'#8b95a5'})));
+  s.appendChild(defs);
+
+  const sig = (x1,x2,y,label,color)=>{
+    s.appendChild(el('line',{x1,y1:y,x2,y2:y,stroke:color,'stroke-width':2,'marker-end':'url(#arrow)'}));
+    s.appendChild(el('text',{x:(x1+x2)/2,y:y-7,'text-anchor':'middle',fill:color,'font-size':11,'font-family':'var(--mono)'},label));
+  };
+  sig(260,420,110,'wdata →','#4fd8c9');
+  sig(260,420,140,'wr_en →','#4fd8c9');
+  sig(420,260,170,'← wfull','#f2617a');
+  sig(260,340,200,'wclk →','#4fd8c9');
+
+  sig(660,820,110,'rdata →','#f2a65a');
+  sig(820,660,140,'← rd_en','#f2a65a');
+  sig(660,820,170,'rempty →','#f2617a');
+  sig(660,740,200,'rclk →','#f2a65a');
+
+  panel.appendChild(s);
+  panel.appendChild(el('p',{class:'flow-note'},'The FIFO is the clock-domain-crossing (CDC) bridge: it lets domain A write at its own rate and domain B read at its own rate, safely.'));
+  root.appendChild(panel);
+
+  const row = el('div',{class:'row'});
+  const p2 = el('div',{class:'panel col'});
+  p2.appendChild(el('h3',{},'Signal glossary'));
+  const tbl = el('table',{class:'glossary'});
+  const rows = [
+    ['wclk','Write-domain clock. Every write-side signal only changes on wclk\'s rising edge.'],
+    ['wdata','Data bus driven by the producer, sampled into the FIFO on a write.'],
+    ['wr_en','Producer asserts this to request a write this cycle.'],
+    ['wfull','FIFO tells the producer "don\'t write" — back-pressure, generated entirely in the wclk domain.'],
+    ['rclk','Read-domain clock, completely independent of wclk.'],
+    ['rdata','Data bus the FIFO presents to the consumer.'],
+    ['rd_en','Consumer asserts this to request a read this cycle.'],
+    ['rempty','FIFO tells the consumer "nothing to read" — generated entirely in the rclk domain.'],
+  ];
+  rows.forEach(([a,b])=> tbl.appendChild(el('tr',{}, el('td',{class:'sig'},a), el('td',{class:'desc'},b))) );
+  p2.appendChild(tbl);
+  row.appendChild(p2);
+
+  const p3 = el('div',{class:'panel col'});
+  p3.appendChild(el('h3',{},'Why not just a sync FIFO?'));
+  p3.appendChild(el('div',{class:'prose'}, el('p',{},
+    'A ', el('b',{},'synchronous'),' FIFO assumes one clock touches both pointers, so comparing them is trivial. The moment wclk and rclk come from ',
+    'different sources — even the same frequency, but a different PLL — their edges drift relative to each other. Any signal that crosses from one clock domain into the other ',
+    'without care can be sampled while it is still changing, and that\'s where this whole design earns its complexity: gray-coded pointers, ',
+    'two-flop synchronizers, and flag logic that never assumes anything about the other clock\'s timing. Stages 02–06 build exactly that, piece by piece.'
+  )));
+  row.appendChild(p3);
+  root.appendChild(row);
+}
+
+/* =========================================================================
+   STAGE 2 — CIRCULAR BUFFER & POINTERS (single shared clock, teaching mode)
+   ========================================================================= */
+function stage2(root){
+  const depth = 8, addrBits = 3;
+  let wptr=0, rptr=0, mem=new Array(depth).fill(null);
+  const mask = depth-1, ptrMask=(1<<(addrBits+1))-1;
+
+  root.appendChild(el('div',{class:'stage-head'},
+    el('div',{class:'eyebrow'},'02 · MENTAL MODEL'),
+    el('h2',{},'The circular buffer, and its one famous bug'),
+    el('p',{class:'sub'},'Forget two clocks for a second. A FIFO is a ring of memory slots with two pointers chasing each other around it: a write pointer that never laps the read pointer, and a read pointer that never passes the write pointer.')
+  ));
+
+  const panel = el('div',{class:'panel'});
+  const ringWrap = el('div',{style:'display:flex;justify-content:center;padding:6px 0 4px;'});
+  panel.appendChild(ringWrap);
+
+  const infoRow = el('div',{class:'row',style:'margin-top:6px;'});
+  const stat = el('div',{class:'col',style:'font-family:var(--mono);font-size:13px;display:flex;gap:26px;flex-wrap:wrap;'});
+  infoRow.appendChild(stat);
+  panel.appendChild(infoRow);
+
+  const ambiguityBox = el('div',{class:'prose',style:'margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:#0d1119;'});
+  panel.appendChild(ambiguityBox);
+
+  const ctrl = el('div',{class:'ctrl-group',style:'margin-top:14px;'});
+  const wBtn = el('button',{class:'btn w'},'Write ▸ wptr++');
+  const rBtn = el('button',{class:'btn r'},'Read ▸ rptr++');
+  const rstBtn = el('button',{class:'btn'},'Reset ring');
+  ctrl.appendChild(wBtn); ctrl.appendChild(rBtn); ctrl.appendChild(rstBtn);
+  panel.appendChild(ctrl);
+  root.appendChild(panel);
+
+  function drawRing(){
+    ringWrap.innerHTML='';
+    const size=300, cx=size/2, cy=size/2, R=105, boxr=22;
+    const s = svg({viewBox:`0 0 ${size} ${size}`, width:300, height:300});
+    s.appendChild(el('circle',{cx,cy,r:R,fill:'none',stroke:'#1e2531','stroke-width':1.5,'stroke-dasharray':'2 5'}));
+    for(let i=0;i<depth;i++){
+      const ang = -Math.PI/2 + i*(2*Math.PI/depth);
+      const x = cx + R*Math.cos(ang), y = cy + R*Math.sin(ang);
+      const filled = mem[i]!==null;
+      s.appendChild(el('rect',{x:x-boxr/2,y:y-boxr/2,width:boxr,height:boxr,rx:5,
+        fill: filled?'#1a2a3a':'#151b26', stroke: filled?'#2c4258':'#252d3d'}));
+      s.appendChild(el('text',{x,y:y+4,'text-anchor':'middle',fill: filled?'#b49ce8':'#5c6576','font-size':10,'font-family':'var(--mono)'}, filled? String(mem[i]) : String(i)));
+      if ((wptr & mask)===i){
+        s.appendChild(el('text',{x,y:y-boxr/2-8,'text-anchor':'middle',fill:'#4fd8c9','font-size':10,'font-family':'var(--mono)','font-weight':700},'W'));
+      }
+      if ((rptr & mask)===i){
+        s.appendChild(el('text',{x,y:y+boxr/2+16,'text-anchor':'middle',fill:'#f2a65a','font-size':10,'font-family':'var(--mono)','font-weight':700},'R'));
+      }
+    }
+    s.appendChild(el('text',{x:cx,y:cy-4,'text-anchor':'middle',fill:'#5c6576','font-size':10,'font-family':'var(--mono)'},'depth = 8'));
+    s.appendChild(el('text',{x:cx,y:cy+12,'text-anchor':'middle',fill:'#5c6576','font-size':10,'font-family':'var(--mono)'},'addr = 3 bits'));
+    ringWrap.appendChild(s);
+  }
+
+  function update(){
+    drawRing();
+    stat.innerHTML='';
+    const item=(label,val,color)=> el('div',{}, el('span',{style:`color:${color}`},label+' '), el('span',{style:'color:#e7eaee'},val));
+    stat.appendChild(item('wptr(bin)=', bits(wptr,addrBits+1), '#4fd8c9'));
+    stat.appendChild(item('rptr(bin)=', bits(rptr,addrBits+1), '#f2a65a'));
+    stat.appendChild(item('count=', String((wptr - rptr) & (2*depth-1)), '#b49ce8'));
+
+    const same = (wptr & mask) === (rptr & mask);
+    const full = same && wptr!==rptr;
+    const empty = wptr===rptr;
+    ambiguityBox.innerHTML='';
+    ambiguityBox.appendChild(el('p',{},
+      el('b',{},'The ambiguity: '),
+      'when wptr and rptr point at the ', el('code',{},'same slot'),
+      ', that can mean the ring is completely ', el('code',{},'empty'),
+      ' or completely ', el('code',{},'full'),
+      ' — the address bits alone can\'t tell you which.'
+    ));
+    ambiguityBox.appendChild(el('p',{style:'margin-bottom:0;'},
+      el('b',{},'The classic fix: '),
+      'make each pointer one bit wider than the address needs (', el('code',{},(addrBits+1)+'-bit pointer for a '+depth+'-deep ring'), '). ',
+      'That extra MSB only ever differs when the write pointer has wrapped exactly one more time than the read pointer — ',
+      empty ? el('span',{style:'color:#6fcf97'},'right now MSBs match → empty.') :
+      full ? el('span',{style:'color:#f2617a'},'right now MSBs differ, addresses match → full.') :
+             el('span',{style:'color:#8b95a5'},'right now addresses differ → neither, just "in progress".')
+    ));
+  }
+
+  wBtn.onclick=()=>{
+    const full = ((wptr&mask)===(rptr&mask)) && wptr!==rptr;
+    if(!full){ mem[wptr&mask] = 1+((wptr*7)%90); wptr=(wptr+1)&ptrMask; }
+    update();
+  };
+  rBtn.onclick=()=>{
+    if(wptr!==rptr){ mem[rptr&mask]=null; rptr=(rptr+1)&ptrMask; }
+    update();
+  };
+  rstBtn.onclick=()=>{ wptr=0;rptr=0; mem=new Array(depth).fill(null); update(); };
+
+  update();
+}
+
+/* =========================================================================
+   STAGE 3 — CROSSING CLOCK DOMAINS / METASTABILITY
+   ========================================================================= */
+function stage3(root){
+  root.appendChild(el('div',{class:'stage-head'},
+    el('div',{class:'eyebrow'},'03 · THE HAZARD'),
+    el('h2',{},'Why you can\'t just wire a pointer across'),
+    el('p',{class:'sub'},'A flip-flop needs its input to be stable for a small setup/hold window around the clock edge. A signal from a foreign, unrelated clock domain makes no such promise — it can change at any instant. Sample it at the wrong instant and the flop can go metastable: neither a clean 0 nor a clean 1 for an unbounded time.')
+  ));
+
+  const panel = el('div',{class:'panel'});
+  const wrap = el('div',{style:'display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start;'});
+  const canvasCol = el('div',{style:'flex:1;min-width:340px;'});
+  const cnv = el('canvas',{width:640,height:220,style:'width:100%;max-width:640px;background:#0d1119;border:1px solid var(--line);border-radius:6px;display:block;'});
+  canvasCol.appendChild(cnv);
+  const ctrl = el('div',{class:'ctrl-group',style:'margin-top:12px;'});
+  const btn = el('button',{class:'btn accent'},'Trigger async transition near clock edge');
+  const btnSafe = el('button',{class:'btn'},'Trigger transition mid-cycle (safe)');
+  ctrl.appendChild(btn); ctrl.appendChild(btnSafe);
+  canvasCol.appendChild(ctrl);
+  wrap.appendChild(canvasCol);
+
+  const textCol = el('div',{class:'prose',style:'flex:1;min-width:260px;'});
+  textCol.innerHTML =
+    '<p><b>What the plot shows:</b> a clock (top trace) and a foreign async input (bottom trace) driving a sampling flip-flop. When the input flips well inside the clock\'s stable window, the flop resolves cleanly and quickly. When it flips inside the tiny setup/hold window around the edge, the flop\'s output can hover at an invalid voltage before it eventually — unpredictably — snaps to 0 or 1.</p>' +
+    '<p style="margin-bottom:0;"><b>The fix isn\'t "avoid it" — it\'s contain it.</b> You can\'t control when the other domain\'s signal changes, so instead you give the sampling flop\'s output extra clock cycles to resolve before anything downstream is allowed to use it. That\'s a <code>synchronizer</code>: two (or more) flops in series, all on the sampling clock, where only the last stage\'s output is trusted. Stage 04 wires this in for real.</p>';
+  wrap.appendChild(textCol);
+  panel.appendChild(wrap);
+  root.appendChild(panel);
+
+  const W=cnv.width, H=cnv.height, ctx=cnv.getContext('2d');
+  function grid(){
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='#181f2c'; ctx.lineWidth=1;
+    for(let x=0;x<W;x+=20){ ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke(); }
+  }
+  function drawStatic(){
+    grid();
+    ctx.strokeStyle='#4fd8c9'; ctx.lineWidth=2; ctx.beginPath();
+    let y=40, x=20;
+    ctx.moveTo(x,y);
+    for(let i=0;i<7;i++){ const y2 = (i%2===0)? y+30:y; ctx.lineTo(x,y2); x+=42; ctx.lineTo(x,y2); }
+    ctx.stroke();
+    ctx.fillStyle='#8b95a5'; ctx.font='11px JetBrains Mono'; ctx.fillText('sampling clock', 20, 20);
+    ctx.fillText('async input', 20, 120);
+    ctx.fillText('sampled output', 20, 190);
+    ctx.strokeStyle='#f2a65a'; ctx.lineWidth=2; ctx.beginPath();
+    ctx.moveTo(20,140); ctx.lineTo(620,140); ctx.stroke();
+    ctx.strokeStyle='#5c6576'; ctx.lineWidth=2; ctx.setLineDash([3,3]); ctx.beginPath();
+    ctx.moveTo(20,205); ctx.lineTo(620,205); ctx.stroke(); ctx.setLineDash([]);
+  }
+  drawStatic();
+
+  function animate(edgeAligned){
+    const dur=1500; const start=performance.now();
+    function frame(now){
+      const p = Math.min(1,(now-start)/dur);
+      grid();
+      ctx.strokeStyle='#4fd8c9'; ctx.lineWidth=2; ctx.beginPath();
+      let y=40,x=20; ctx.moveTo(x,y);
+      const period=84, edgeX = 20 + period*2.5;
+      for(let i=0;i<7;i++){ const y2=(i%2===0)?y+30:y; ctx.lineTo(x,y2); x+=period/2; ctx.lineTo(x,y2); }
+      ctx.stroke();
+      ctx.fillStyle='#8b95a5'; ctx.font='11px JetBrains Mono';
+      ctx.fillText('sampling clock',20,20);
+      ctx.fillText('async input',20,120);
+      ctx.fillText('sampled output',20,190);
+
+      const transX = edgeAligned ? edgeX + (Math.random()<0.5?-2:2) : edgeX - period*0.5;
+      ctx.strokeStyle='#f2a65a'; ctx.lineWidth=2; ctx.beginPath();
+      ctx.moveTo(20,140);
+      const curX = 20 + p*600;
+      if(curX < transX){ ctx.lineTo(curX,140); }
+      else { ctx.lineTo(transX,140); ctx.lineTo(transX,100); ctx.lineTo(Math.min(curX,620),100); }
+      ctx.stroke();
+
+      ctx.strokeStyle= edgeAligned ? '#f2617a' : '#6fcf97';
+      ctx.lineWidth=2; ctx.beginPath();
+      ctx.moveTo(20,205);
+      let ox=20;
+      const settleX = edgeAligned ? edgeX+150 : transX+30;
+      while(ox < Math.min(curX,620)){
+        let oy=205;
+        if(ox>transX){
+          if(edgeAligned && ox<settleX){
+            oy = 205 - 35*Math.sin((ox-transX)*0.35)*Math.exp(-(ox-transX)/70) - 20;
+          } else {
+            oy = 205 - 40;
+          }
+        }
+        ctx.lineTo(ox,oy);
+        ox+=3;
+      }
+      ctx.stroke();
+
+      if(edgeAligned && curX>transX && curX<settleX){
+        ctx.fillStyle='#f2617a'; ctx.font='bold 11px JetBrains Mono';
+        ctx.fillText('METASTABLE — resolving...', transX-10, 95);
+      }
+      if(p<1) requestAnimationFrame(frame); else {
+        ctx.fillStyle= edgeAligned? '#f2617a':'#6fcf97'; ctx.font='bold 11px JetBrains Mono';
+        ctx.fillText(edgeAligned? 'resolved late — unpredictable, could propagate a glitch' : 'resolved cleanly within one cycle', 20, H-8);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  btn.onclick=()=>animate(true);
+  btnSafe.onclick=()=>animate(false);
+}
+
+/* =========================================================================
+   STAGE 4 — GRAY CODE + SYNCHRONIZER
+   ========================================================================= */
+function stage4(root){
+  root.appendChild(el('div',{class:'stage-head'},
+    el('div',{class:'eyebrow'},'04 · THE FIX'),
+    el('h2',{},'One bit at a time, then two flops of patience'),
+    el('p',{class:'sub'},'Two problems, two fixes. First: a binary counter can change several bits at once (3→4 is 011→100), so a synchronizer sampling it mid-transition could latch a value that was never valid. Gray code changes exactly one bit per count, so any sample you catch mid-transition is either the old value or the new one — never garbage. Second: even one bit needs time to resolve, so it still goes through a 2-flop synchronizer before anything trusts it.')
+  ));
+
+  const row = el('div',{class:'row'});
+  const p1 = el('div',{class:'panel col'});
+  p1.appendChild(el('h3',{},'Binary vs. Gray — count 0…7'));
+  const tbl = el('table',{class:'glossary'});
+  tbl.appendChild(el('tr',{}, el('td',{class:'sig'},'count'), el('td',{class:'sig'},'binary'), el('td',{class:'sig'},'gray'), el('td',{class:'desc'},'bits that flip vs previous')));
+  let prevG=0;
+  for(let i=0;i<8;i++){
+    const g = Engine.bin2gray(i);
+    const flips = (g ^ prevG).toString(2).split('').filter(c=>c==='1').length;
+    prevG=g;
+    tbl.appendChild(el('tr',{},
+      el('td',{class:'sig'},String(i)),
+      el('td',{class:'desc',style:'font-family:var(--mono);color:#8b95a5'}, bits(i,3)),
+      el('td',{class:'desc',style:'font-family:var(--mono);color:'+(i===0?'#5c6576':'#5b8cff')}, bits(g,3)),
+      el('td',{class:'desc'}, i===0? '—' : (flips+' bit'+(flips>1?'s':'')+(flips>1?'  ⚠':'')))
+    ));
+  }
+  p1.appendChild(tbl);
+  row.appendChild(p1);
+
+  const p2 = el('div',{class:'panel col'});
+  p2.appendChild(el('h3',{},'2-flop synchronizer chain'));
+  const s = svg({viewBox:'0 0 420 200', width:'100%', height:'auto'});
+  const stage = (x,label,val,color)=>{
+    s.appendChild(el('rect',{x,y:70,width:70,height:60,rx:6,fill:'#151b26',stroke:color}));
+    s.appendChild(el('text',{x:x+35,y:95,'text-anchor':'middle',fill:color,'font-size':11,'font-family':'var(--mono)'},label));
+    s.appendChild(el('text',{x:x+35,y:115,'text-anchor':'middle',fill:'#e7eaee','font-size':13,'font-family':'var(--mono)','font-weight':700},val));
+  };
+  s.appendChild(el('text',{x:10,y:35,fill:'#f2a65a','font-size':11,'font-family':'var(--mono)'},'rptr_gray (foreign, rclk domain)'));
+  stage(20,'FF1 · wclk','?','#f2617a');
+  stage(160,'FF2 · wclk','synced','#4fd8c9');
+  s.appendChild(el('rect',{x:300,y:70,width:100,height:60,rx:6,fill:'#151125',stroke:'#4b3a80'}));
+  s.appendChild(el('text',{x:350,y:95,'text-anchor':'middle',fill:'#c9b8ff','font-size':11,'font-family':'var(--mono)'},'full-flag'));
+  s.appendChild(el('text',{x:350,y:112,'text-anchor':'middle',fill:'#c9b8ff','font-size':11,'font-family':'var(--mono)'},'compare'));
+  const defs=el('defs',{}); defs.appendChild(el('marker',{id:'a4',markerWidth:8,markerHeight:8,refX:6,refY:3,orient:'auto'}, el('path',{d:'M0,0L6,3L0,6Z',fill:'#5c6576'})));
+  s.appendChild(defs);
+  const arrow=(x1,x2,y)=>{ s.appendChild(el('line',{x1,y1:y,x2,y2:y,stroke:'#5c6576','stroke-width':1.6,'marker-end':'url(#a4)'})); };
+  arrow(0,20,100); arrow(90,160,100); arrow(230,300,100);
+  s.appendChild(el('text',{x:210,y:150,'text-anchor':'middle',class:'lbl'},'clocked entirely by wclk — the foreign clock never touches these flops'));
+  p2.appendChild(s);
+  p2.appendChild(el('div',{class:'prose'},el('p',{style:'margin-bottom:0'},
+    'FF1 is the one that might go metastable — it\'s the actual crossing point. Giving it one full wclk cycle to settle before FF2 samples it is what makes FF2\'s output safe to use. This costs 2 wclk cycles of latency on the pointer information, which is exactly why the flag logic in stage 05 has to be conservative — it reacts to a slightly ', el('i',{},'stale'), ' view of the other domain\'s pointer, on purpose.'
+  )));
+  row.appendChild(p2);
+  root.appendChild(row);
+}
+
+/* =========================================================================
+   STAGE 5 — FULL / EMPTY LOGIC
+   ========================================================================= */
+function stage5(root){
+  root.appendChild(el('div',{class:'stage-head'},
+    el('div',{class:'eyebrow'},'05 · THE FLAGS'),
+    el('h2',{},'Deriving wfull and rempty'),
+    el('p',{class:'sub'},'Both flags are generated locally — wfull only from wclk-domain signals, rempty only from rclk-domain signals — by comparing a live local gray pointer against the synchronized (2-cycle-old) copy of the other pointer.')
+  ));
+
+  const row = el('div',{class:'row'});
+  const pe = el('div',{class:'panel col'});
+  pe.appendChild(el('h3',{},'rempty (in the rclk domain)'));
+  pe.appendChild(el('div',{class:'prose'},
+    el('p',{},'The read side simply asks: "does my next gray pointer equal the write pointer I most recently synchronized in?" If yes, I would be reading a slot the writer hasn\'t written yet — so don\'t.'),
+    el('div',{style:'font-family:var(--mono);background:#0d1119;border:1px solid var(--line);border-radius:6px;padding:10px 12px;color:#e7eaee;font-size:12.5px;'},
+      'rempty = ( rptr_gray_next == wq2_gray )'
+    )
+  ));
+  row.appendChild(pe);
+
+  const pf = el('div',{class:'panel col'});
+  pf.appendChild(el('h3',{},'wfull (in the wclk domain)'));
+  pf.appendChild(el('div',{class:'prose'},
+    el('p',{},'The write side can\'t just check "pointers equal" — that\'s the same empty/full ambiguity from stage 02, now expressed in gray code. The standard resolution: full is declared when the pointers match on every bit ', el('i',{},'except'),' the top two, which must be inverted relative to each other (that inversion is gray code\'s signature for "wrapped exactly one lap further").'),
+    el('div',{style:'font-family:var(--mono);background:#0d1119;border:1px solid var(--line);border-radius:6px;padding:10px 12px;color:#e7eaee;font-size:12.5px;line-height:1.7;'},
+      'wfull = ( wptr_gray_next ==<br>&nbsp;&nbsp;{ ~rq2_gray[N] , ~rq2_gray[N-1] , rq2_gray[N-2:0] } )'
+    )
+  ));
+  row.appendChild(pf);
+  root.appendChild(row);
+
+  const p3 = el('div',{class:'panel'});
+  p3.appendChild(el('h3',{},'Try it — flip pointer bits and watch wfull'));
+  const N=4;
+  const demoWrap = el('div',{style:'display:flex;gap:24px;flex-wrap:wrap;align-items:center;'});
+  const svgHost = el('div',{});
+  demoWrap.appendChild(svgHost);
+  const controls = el('div',{style:'display:flex;flex-direction:column;gap:8px;'});
+  let wg = 0b0110;
+  let rq2 = 0b0110;
+  demoWrap.appendChild(controls);
+  p3.appendChild(demoWrap);
+  root.appendChild(p3);
+
+  function bitToggleRow(label,val,onToggle,color){
+    const rowEl = el('div',{style:'display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:12px;'});
+    rowEl.appendChild(el('span',{style:'color:'+color+';width:80px;display:inline-block'},label));
+    for(let i=N-1;i>=0;i--){
+      const bitVal = (val>>i)&1;
+      const b = el('button',{class:'btn',style:'padding:5px 9px;color:'+(bitVal?color:'#5c6576')+';border-color:'+(bitVal?color:'var(--line)')}, String(bitVal));
+      b.onclick=()=>onToggle(i);
+      rowEl.appendChild(b);
+    }
+    return rowEl;
+  }
+
+  function draw(){
+    controls.innerHTML='';
+    controls.appendChild(bitToggleRow('wptr_gray',wg,(i)=>{ wg ^= (1<<i); draw(); },'#4fd8c9'));
+    controls.appendChild(bitToggleRow('rq2_gray',rq2,(i)=>{ rq2 ^= (1<<i); draw(); },'#f2a65a'));
+    const full = Engine.fullCheck(wg, rq2, 3);
+    controls.appendChild(el('div',{class:'flag-light',style:'margin-top:6px;'},
+      el('div',{class:'dot'+(full?' on-flag':'')}), 'wfull = '+(full?'1  (declared full)':'0')
+    ));
+    svgHost.innerHTML='';
+    const s = svg({viewBox:'0 0 280 70', width:280, height:70});
+    s.appendChild(el('text',{x:0,y:16,fill:'#8b95a5','font-size':11,'font-family':'var(--mono)'}, 'inverted-MSB target: '+bits((rq2 ^ (1<<(N-1)) ^ (1<<(N-2))),N)));
+    s.appendChild(el('text',{x:0,y:40,fill: full? '#f2617a':'#6fcf97','font-size':13,'font-family':'var(--mono)','font-weight':700}, full? 'matches wptr_gray_next → FULL' : 'does not match → not full'));
+    svgHost.appendChild(s);
+  }
+  draw();
+}
+
+/* =========================================================================
+   STAGE 6 — FULL PARAMETERIZED SIMULATOR
+   ========================================================================= */
+let waveRAF = null;
+function cancelWaveLoop(){ if(waveRAF){ clearTimeout(waveRAF); waveRAF=null; } }
+
+function stage6(root){
+  const S = Engine.reset(Engine.state().depth || 8, Engine.state().widthBits || 8);
+  Engine.state().wrEn = true; Engine.state().rdEn = true;
+
+  root.appendChild(el('div',{class:'stage-head'},
+    el('div',{class:'eyebrow'},'06 · FULL DESIGN'),
+    el('h2',{},'Parameterized async FIFO — live'),
+    el('p',{class:'sub'},'Depth and width are parameters. wclk and rclk are genuinely independent — run them freely or step them by hand and watch the pointers, the 2-flop synchronizers, the flags, and the waveform strip all react in real time.')
+  ));
+
+  const paramPanel = el('div',{class:'panel'});
+  paramPanel.appendChild(el('h3',{},'Parameters'));
+  const paramRow = el('div',{class:'row',style:'align-items:center;'});
+  const depthField = el('div',{class:'field'});
+  depthField.appendChild(el('label',{},'FIFO_DEPTH'));
+  const depthPills = el('div',{class:'pillbar'});
+  [4,8,16].forEach(d=>{
+    const p = el('div',{class:'pill'+(d===S.depth?' active':'')}, String(d));
+    p.onclick=()=>{ const st=Engine.state(); stopClocksGlobal(st); Engine.reset(d, st.widthBits); render(); };
+    depthPills.appendChild(p);
+  });
+  depthField.appendChild(depthPills);
+  const widthField = el('div',{class:'field'});
+  widthField.appendChild(el('label',{},'DATA_WIDTH'));
+  const widthPills = el('div',{class:'pillbar'});
+  [4,8].forEach(w=>{
+    const p = el('div',{class:'pill'+(w===S.widthBits?' active':'')}, w+'-bit');
+    p.onclick=()=>{ const st=Engine.state(); stopClocksGlobal(st); Engine.reset(st.depth, w); render(); };
+    widthPills.appendChild(p);
+  });
+  widthField.appendChild(widthPills);
+  paramRow.appendChild(depthField); paramRow.appendChild(widthField);
+  paramPanel.appendChild(paramRow);
+  root.appendChild(paramPanel);
+
+  const mainRow = el('div',{class:'row'});
+
+  const clkPanel = el('div',{class:'panel col',style:'min-width:320px;'});
+  clkPanel.appendChild(el('h3',{},'Write domain · wclk'));
+  const wclkCtrl = el('div',{class:'ctrl-group'});
+  const wAutoBtn = el('button',{class:'btn w'},'▶ Run wclk');
+  const wStepBtn = el('button',{class:'btn w'},'Step wclk ↑');
+  wclkCtrl.appendChild(wAutoBtn); wclkCtrl.appendChild(wStepBtn);
+  clkPanel.appendChild(wclkCtrl);
+  const wSpeedField = el('div',{class:'field',style:'margin-top:10px;'});
+  wSpeedField.appendChild(el('label',{},'wclk period (ms)'));
+  const wSpeed = el('input',{type:'range',min:'200',max:'2000',step:'50',value:String(S.wPeriod)});
+  wSpeedField.appendChild(wSpeed);
+  clkPanel.appendChild(wSpeedField);
+  const wrEnField = el('div',{class:'field',style:'margin-top:10px;'});
+  const wrEnBtn = el('button',{class:'btn w'+(S.wrEn?' on':'')},'wr_en: '+(S.wrEn?'1':'0'));
+  wrEnField.appendChild(wrEnBtn);
+  clkPanel.appendChild(wrEnField);
+  const dataInField = el('div',{class:'field',style:'margin-top:10px;'});
+  dataInField.appendChild(el('label',{},'next wdata'));
+  const dataInBox = el('div',{style:'font-family:var(--mono);color:#b49ce8;font-size:14px;'});
+  dataInField.appendChild(dataInBox);
+  clkPanel.appendChild(dataInField);
+  mainRow.appendChild(clkPanel);
+
+  const memPanel = el('div',{class:'panel col',style:'min-width:340px;flex:1.4;'});
+  memPanel.appendChild(el('h3',{},'Ring buffer + pointers'));
+  const ringHost = el('div',{style:'display:flex;justify-content:center;'});
+  memPanel.appendChild(ringHost);
+  const flagsRow = el('div',{style:'display:flex;justify-content:center;gap:26px;margin-top:6px;'});
+  const wfullLight = el('div',{class:'flag-light'}, el('div',{class:'dot'}), el('span',{},'wfull'));
+  const remptyLight = el('div',{class:'flag-light'}, el('div',{class:'dot'}), el('span',{},'rempty'));
+  flagsRow.appendChild(wfullLight); flagsRow.appendChild(remptyLight);
+  memPanel.appendChild(flagsRow);
+  mainRow.appendChild(memPanel);
+
+  const clkPanelR = el('div',{class:'panel col',style:'min-width:320px;'});
+  clkPanelR.appendChild(el('h3',{},'Read domain · rclk'));
+  const rclkCtrl = el('div',{class:'ctrl-group'});
+  const rAutoBtn = el('button',{class:'btn r'},'▶ Run rclk');
+  const rStepBtn = el('button',{class:'btn r'},'Step rclk ↑');
+  rclkCtrl.appendChild(rAutoBtn); rclkCtrl.appendChild(rStepBtn);
+  clkPanelR.appendChild(rclkCtrl);
+  const rSpeedField = el('div',{class:'field',style:'margin-top:10px;'});
+  rSpeedField.appendChild(el('label',{},'rclk period (ms)'));
+  const rSpeed = el('input',{type:'range',min:'200',max:'2000',step:'50',value:String(S.rPeriod)});
+  rSpeedField.appendChild(rSpeed);
+  clkPanelR.appendChild(rSpeedField);
+  const rdEnField = el('div',{class:'field',style:'margin-top:10px;'});
+  const rdEnBtn = el('button',{class:'btn r'+(S.rdEn?' on':'')},'rd_en: '+(S.rdEn?'1':'0'));
+  rdEnField.appendChild(rdEnBtn);
+  clkPanelR.appendChild(rdEnField);
+  const dataOutField = el('div',{class:'field',style:'margin-top:10px;'});
+  dataOutField.appendChild(el('label',{},'last rdata'));
+  const dataOutBox = el('div',{style:'font-family:var(--mono);color:#b49ce8;font-size:14px;'});
+  dataOutField.appendChild(dataOutBox);
+  clkPanelR.appendChild(dataOutField);
+  mainRow.appendChild(clkPanelR);
+
+  root.appendChild(mainRow);
+
+  const ptrPanel = el('div',{class:'panel'});
+  ptrPanel.appendChild(el('h3',{},'Pointer state & synchronizers'));
+  const ptrGrid = el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:18px;'});
+  const wSide = el('div',{style:'font-family:var(--mono);font-size:12.5px;line-height:2;'});
+  const rSide = el('div',{style:'font-family:var(--mono);font-size:12.5px;line-height:2;'});
+  ptrGrid.appendChild(wSide); ptrGrid.appendChild(rSide);
+  ptrPanel.appendChild(ptrGrid);
+  root.appendChild(ptrPanel);
+
+  const wavePanel = el('div',{class:'panel'});
+  wavePanel.appendChild(el('h3',{},'Live waveform'));
+  const wcnv = el('canvas',{width:1080,height:230,style:'width:100%;height:auto;background:#0d1119;border:1px solid var(--line);border-radius:6px;display:block;'});
+  wavePanel.appendChild(wcnv);
+  root.appendChild(wavePanel);
+
+  function drawRing(){
+    const st = Engine.state();
+    ringHost.innerHTML='';
+    const size=280, cx=size/2, cy=size/2, R=Math.min(100, 40+st.depth*4), boxr= st.depth>8? 16:22;
+    const s = svg({viewBox:`0 0 ${size} ${size}`, width:280, height:280});
+    s.appendChild(el('circle',{cx,cy,r:R,fill:'none',stroke:'#1e2531','stroke-width':1.5,'stroke-dasharray':'2 5'}));
+    for(let i=0;i<st.depth;i++){
+      const ang = -Math.PI/2 + i*(2*Math.PI/st.depth);
+      const x = cx+R*Math.cos(ang), y=cy+R*Math.sin(ang);
+      const filled = st.mem[i]!==null;
+      s.appendChild(el('rect',{x:x-boxr/2,y:y-boxr/2,width:boxr,height:boxr,rx:4,
+        fill: filled?'#1a2a3a':'#151b26', stroke: filled?'#2c4258':'#252d3d'}));
+      if(boxr>=20) s.appendChild(el('text',{x,y:y+3,'text-anchor':'middle',fill: filled?'#b49ce8':'#5c6576','font-size':9,'font-family':'var(--mono)'}, filled? String(st.mem[i]) : ''));
+      if((st.wptr & st.mask)===i) s.appendChild(el('text',{x,y:y-boxr/2-7,'text-anchor':'middle',fill:'#4fd8c9','font-size':10,'font-family':'var(--mono)','font-weight':700},'W'));
+      if((st.rptr & st.mask)===i) s.appendChild(el('text',{x,y:y+boxr/2+14,'text-anchor':'middle',fill:'#f2a65a','font-size':10,'font-family':'var(--mono)','font-weight':700},'R'));
+    }
+    s.appendChild(el('text',{x:cx,y:cy,'text-anchor':'middle',fill:'#5c6576','font-size':10,'font-family':'var(--mono)'},'depth='+st.depth));
+    ringHost.appendChild(s);
+  }
+
+  function fmtHex(v,widthBits){ return v==null?'--':'0x'+v.toString(16).toUpperCase().padStart(Math.ceil(widthBits/4),'0'); }
+
+  function updateAll(){
+    const st = Engine.state();
+    drawRing();
+    wfullLight.querySelector('.dot').className = 'dot'+(st.wfull?' on-flag':'');
+    remptyLight.querySelector('.dot').className = 'dot'+(st.rempty?' on-good':'');
+    dataInBox.textContent = fmtHex(st.dataIn, st.widthBits);
+    dataOutBox.textContent = st.lastRead ? fmtHex(st.lastRead.val, st.widthBits) : '--';
+
+    const N = st.addrBits+1;
+    wSide.innerHTML =
+      '<div style="color:#4fd8c9">WRITE DOMAIN (wclk)</div>'+
+      'wptr (bin)  : '+bits(st.wptr,N)+'<br>'+
+      'wptr (gray) : <span style="color:#5b8cff">'+bits(Engine.bin2gray(st.wptr),N)+'</span><br>'+
+      'writes done : '+st.writes+'<br>'+
+      '<div style="color:#f2a65a;margin-top:8px">synced rptr (into wclk):</div>'+
+      'FF1 (rq1) : '+bits(st.rq_ff1,N)+'<br>'+
+      'FF2 (rq2) : '+bits(st.rq_ff2,N)+' <span style="color:#5c6576">&larr; used for wfull</span>';
+    rSide.innerHTML =
+      '<div style="color:#f2a65a">READ DOMAIN (rclk)</div>'+
+      'rptr (bin)  : '+bits(st.rptr,N)+'<br>'+
+      'rptr (gray) : <span style="color:#5b8cff">'+bits(Engine.bin2gray(st.rptr),N)+'</span><br>'+
+      'reads done  : '+st.reads+'<br>'+
+      '<div style="color:#4fd8c9;margin-top:8px">synced wptr (into rclk):</div>'+
+      'FF1 (wq1) : '+bits(st.wq_ff1,N)+'<br>'+
+      'FF2 (wq2) : '+bits(st.wq_ff2,N)+' <span style="color:#5c6576">&larr; used for rempty</span>';
+  }
+
+  function stopClocksGlobal(st){
+    if(st.wTimer){ clearInterval(st.wTimer); st.wTimer=null; }
+    if(st.rTimer){ clearInterval(st.rTimer); st.rTimer=null; }
+    st.autoW=false; st.autoR=false;
+  }
+
+  wAutoBtn.onclick=()=>{
+    const st = Engine.state();
+    st.autoW = !st.autoW;
+    wAutoBtn.textContent = st.autoW ? '■ Stop wclk' : '▶ Run wclk';
+    wAutoBtn.classList.toggle('on', st.autoW);
+    wStepBtn.disabled = st.autoW;
+    if(st.autoW){
+      st.wTimer = setInterval(()=>{
+        const s2 = Engine.state();
+        s2.wclk = s2.wclk?0:1;
+        if(s2.wclk===1) Engine.writeEdge();
+        updateAll();
+      }, Math.max(120, st.wPeriod/2));
+    } else if(st.wTimer){ clearInterval(st.wTimer); st.wTimer=null; }
+  };
+  wStepBtn.onclick=()=>{
+    const st = Engine.state();
+    st.wclk=1; Engine.writeEdge(); updateAll();
+    setTimeout(()=>{ st.wclk=0; }, 140);
+  };
+  wSpeed.oninput=()=>{ Engine.state().wPeriod = Number(wSpeed.value); };
+  wrEnBtn.onclick=()=>{
+    const st=Engine.state(); st.wrEn=!st.wrEn;
+    wrEnBtn.textContent='wr_en: '+(st.wrEn?'1':'0'); wrEnBtn.classList.toggle('on', st.wrEn);
+  };
+
+  rAutoBtn.onclick=()=>{
+    const st = Engine.state();
+    st.autoR = !st.autoR;
+    rAutoBtn.textContent = st.autoR ? '■ Stop rclk' : '▶ Run rclk';
+    rAutoBtn.classList.toggle('on', st.autoR);
+    rStepBtn.disabled = st.autoR;
+    if(st.autoR){
+      st.rTimer = setInterval(()=>{
+        const s2 = Engine.state();
+        s2.rclk = s2.rclk?0:1;
+        if(s2.rclk===1) Engine.readEdge();
+        updateAll();
+      }, Math.max(120, st.rPeriod/2));
+    } else if(st.rTimer){ clearInterval(st.rTimer); st.rTimer=null; }
+  };
+  rStepBtn.onclick=()=>{
+    const st = Engine.state();
+    st.rclk=1; Engine.readEdge(); updateAll();
+    setTimeout(()=>{ st.rclk=0; }, 140);
+  };
+  rSpeed.oninput=()=>{ Engine.state().rPeriod = Number(rSpeed.value); };
+  rdEnBtn.onclick=()=>{
+    const st=Engine.state(); st.rdEn=!st.rdEn;
+    rdEnBtn.textContent='rd_en: '+(st.rdEn?'1':'0'); rdEnBtn.classList.toggle('on', st.rdEn);
+  };
+
+  const wctx = wcnv.getContext('2d');
+  function sampleLoop(){
+    Engine.sample(); Engine.trimEvents();
+    drawWave();
+    waveRAF = setTimeout(sampleLoop, 30);
+  }
+  function drawWave(){
+    const st = Engine.state();
+    const W = wcnv.width, H = wcnv.height;
+    wctx.clearRect(0,0,W,H);
+    wctx.strokeStyle='#161c28'; wctx.lineWidth=1;
+    for(let x=0;x<W;x+=40){ wctx.beginPath(); wctx.moveTo(x,0); wctx.lineTo(x,H); wctx.stroke(); }
+
+    const lanes = [
+      {key:'wclk', label:'wclk', color:'#4fd8c9', y:20},
+      {key:'wren', label:'write happening', color:'#4fd8c9', y:65},
+      {key:'wfull', label:'wfull', color:'#f2617a', y:110},
+      {key:'rclk', label:'rclk', color:'#f2a65a', y:150},
+      {key:'rden', label:'read happening', color:'#f2a65a', y:190},
+      {key:'rempty', label:'rempty', color:'#6fcf97', y:220},
+    ];
+    const samples = st.samples;
+    const now = performance.now();
+    const windowMs = 10000;
+    const x0 = W*0.14;
+    const xScale = (W - x0 - 10) / windowMs;
+
+    lanes.forEach(l=>{
+      wctx.fillStyle = l.color; wctx.font='11px JetBrains Mono';
+      wctx.fillText(l.label, 6, l.y+4);
+      wctx.strokeStyle = l.color; wctx.lineWidth=1.6;
+      wctx.beginPath();
+      let started=false;
+      for(let i=0;i<samples.length;i++){
+        const sm = samples[i];
+        const age = now - sm.t;
+        if(age>windowMs) continue;
+        const x = x0 + (windowMs-age)*xScale;
+        const v = sm[l.key];
+        const y = l.y + 4 - v*16;
+        if(!started){ wctx.moveTo(x,y); started=true; } else { wctx.lineTo(x,y); }
+      }
+      wctx.stroke();
+    });
+
+    st.events.forEach(ev=>{
+      const age = now-ev.t; if(age>windowMs) return;
+      const x = x0 + (windowMs-age)*xScale;
+      wctx.fillStyle = ev.type==='w' ? '#4fd8c9' : '#f2a65a';
+      wctx.beginPath(); wctx.arc(x, ev.type==='w'?65:190, 3, 0, 7); wctx.fill();
+    });
+
+    wctx.fillStyle='#5c6576'; wctx.font='10px JetBrains Mono';
+    wctx.fillText('← 10s window', W-90, H-6);
+  }
+
+  cancelWaveLoop();
+  sampleLoop();
+  updateAll();
+}
+
+render();
+</script>
+</body>
+</html>
